@@ -1,0 +1,32 @@
+name: Basis Automation
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  automation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client selenium webdriver-manager requests
+      
+      - name: Run automation script
+        env:
+          BASIS_USERNAME: ${{ secrets.BASIS_USERNAME }}
+          BASIS_PASSWORD: ${{ secrets.BASIS_PASSWORD }}
+          LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
+          SOURCE_FOLDER_ID: ${{ secrets.SOURCE_FOLDER_ID }}
+          DESTINATION_FOLDER_ID: ${{ secrets.DESTINATION_FOLDER_ID }}
+          GDRIVE_JSON: ${{ secrets.GDRIVE_JSON }}
+        run: python main.py
