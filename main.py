@@ -38,12 +38,11 @@ def get_drive_service():
     return build('drive', 'v3', credentials=creds)
 
 def download_csvs(service):
-    """Google Driveから未処理のCSVをダウンロード"""
     query = f"'{SOURCE_FOLDER_ID}' in parents and name contains 'output' and mimeType = 'text/csv' and trashed = false"
     items = service.files().list(q=query, fields="files(id, name)").execute().get('files', [])
     downloaded = []
     for item in items:
-        path = os.path.join(TEMP_DIR, item['name'])
+        path = os.path.abspath(os.path.join(TEMP_DIR, item['name']))
         request = service.files().get_media(fileId=item['id'])
         with io.FileIO(path, 'wb') as fh:
             MediaIoBaseDownload(fh, request).next_chunk()
@@ -52,7 +51,6 @@ def download_csvs(service):
     return downloaded
 
 def move_drive_file(service, file_id, new_name):
-    """処理済みファイルをDrive上で移動"""
     file = service.files().get(fileId=file_id, fields='parents').execute()
     previous_parents = ",".join(file.get('parents'))
     service.files().update(fileId=file_id, addParents=DESTINATION_FOLDER_ID, removeParents=previous_parents, body={'name': new_name}).execute()
@@ -79,7 +77,6 @@ def main():
         logging.info("No files to process.")
         return
 
-    # Selenium設定
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -92,31 +89,70 @@ def main():
 
     try:
         # 1. ログイン
+        logging.info("Logging into BLAS...")
         driver.get("https://www.basis-service.com/blas70/users/login")
         wait.until(EC.presence_of_element_located((By.NAME, "username"))).send_keys(BASIS_USERNAME)
         driver.find_element(By.NAME, "password").send_keys(BASIS_PASSWORD)
         driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//input[@type='submit']"))
         
+        # ログイン後の安定待ち
+        time.sleep(5)
+
         for f in files:
             # 物件名取得
             with open(f['local'], 'r', encoding='utf-8-sig') as csvf:
-                row = next(csv.reader(csvf)) # Skip header
-                row = next(csv.reader(csvf))
-                prop_name = row[4] if len(row) > 4 else "不明"
+                reader = csv.reader(csvf)
+                next(reader) # ヘッダー
+                row = next(reader, None)
+                prop_name = row[4] if row and len(row) > 4 else "不明"
 
-            # 2. BLAS操作（インポート画面への遷移・アップロード）
-            # ※ ここにサイドバークリックやCSVインポートのボタン操作を記述
             logging.info(f"Processing: {prop_name}")
+
+            # 2. BLAS操作（画面遷移とアップロード）
+            # サイドバーをクリック
+            sidebar_xpath = "/html/body/div[1]/div/div[1]/ul/li[5]/a"
+            wait.until(EC.element_to_be_clickable((By.XPATH, sidebar_xpath))).click()
+            time.sleep(3)
+
+            # ドロップダウン選択（Select2）
+            wait.until(EC.element_to_be_clickable((By.CLASS_NAME, "select2-selection__arrow"))).click()
+            search_field = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "select2-search__field")))
+            search_field.send_keys("【レジル】停止・復電業務")
+            time.sleep(2)
+            wait.until(EC.element_to_be_clickable((By.XPATH, "//li[contains(text(), '【レジル】停止・復電業務')]"))).click()
+
+            # CSVインポートボタン
+            wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(.,'CSVインポート')]"))).click()
             
-            # (例) サイドバー -> Select2選択 -> ファイル送信 -> アラート承認
-            # ※ 前回のスクリプトのdriver操作部分をここに集約
+            # ラジオボタン選択（JSで確実に）
+            chk = wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='radio' and @value='1']")))
+            driver.execute_script("arguments[0].click();", chk)
+
+            # ファイル送信
+            driver.find_element(By.XPATH, "//input[@type='file']").send_keys(f['local'])
+            
+            # インポート実行
+            wait.until(EC.element_to_be_clickable((By.ID, "csv_import_btn"))).click()
+
+            # アラート承認
+            try:
+                wait.until(EC.alert_is_present())
+                driver.switch_to.alert.accept()
+                logging.info("Alert accepted.")
+            except:
+                logging.warning("No alert appeared.")
+
+            # アップロード完了待ち
+            time.sleep(10)
             
             # 3. 完了後の処理
-            move_drive_file(service, f['id'], f"processed_{prop_name}_{datetime.datetime.now().strftime('%H%M%S')}.csv")
+            timestamp = datetime.datetime.now().strftime('%H%M%S')
+            move_drive_file(service, f['id'], f"processed_{prop_name}_{timestamp}.csv")
             send_lark(prop_name)
+            logging.info(f"Successfully processed: {prop_name}")
 
     except Exception as e:
-        driver.save_screenshot('error.png')
+        driver.save_screenshot('error_screenshot.png')
         logging.error(f"Error: {e}")
         raise e
     finally:
