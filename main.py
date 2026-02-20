@@ -69,14 +69,17 @@ def move_drive_file(service, file_id, new_name):
         body={'name': new_name}
     ).execute()
 
-def send_lark_success(display_name):
+def send_lark_success(display_names):
     """
-    指定の画像デザインに基づいた通知送信（日本時間対応）
+    成功したすべての物件名をリストで受け取り、まとめて通知を送信する
     """
-    if not LARK_WEBHOOK_URL: return
+    if not LARK_WEBHOOK_URL or not display_names: return
     
-    # 日本時間でのフォーマット
     now_str = jst_now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    # 詳細行を複数作成
+    detail_lines = [f"**詳細:** レジル復旧作業 「{name}」 BLASの登録が完了しました" for name in display_names]
+    details_content = "\n".join(detail_lines)
     
     payload = {
         "msg_type": "interactive",
@@ -89,7 +92,7 @@ def send_lark_success(display_name):
                 "tag": "div",
                 "text": {
                     "tag": "lark_md",
-                    "content": f"**ステータス:** ✅ SUCCESS\n**詳細:** レジル復旧作業 「{display_name}」 BLASの登録が完了しました\n**実行日時:** {now_str}"
+                    "content": f"**ステータス:** ✅ SUCCESS\n{details_content}\n**実行日時:** {now_str}"
                 }
             }]
         }
@@ -119,6 +122,9 @@ def main():
     driver = webdriver.Chrome(options=options)
     wait = WebDriverWait(driver, 30)
 
+    # 成功した物件名を保持するリスト
+    success_items = []
+
     try:
         # ログイン処理
         logging.info("BLASにログイン中...")
@@ -134,7 +140,7 @@ def main():
                 # CSVから物件名(5列目)と部屋番号(6列目)を抽出
                 with open(f['local'], 'r', encoding='utf-8-sig') as csvf:
                     reader = csv.reader(csvf)
-                    next(reader) # ヘッダーをスキップ
+                    next(reader) 
                     row = next(reader, None)
                     if row:
                         prop_name = row[4] # 物件名
@@ -143,45 +149,45 @@ def main():
 
                 logging.info(f"処理開始: {display_name}")
 
-                # BLAS操作: メニュー遷移
+                # BLAS操作
                 wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[1]/div/div[1]/ul/li[5]/a"))).click()
                 time.sleep(3)
-                
-                # 業務選択
                 wait.until(EC.element_to_be_clickable((By.CLASS_NAME, "select2-selection__arrow"))).click()
                 search_field = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "select2-search__field")))
                 search_field.send_keys("【レジル】停止・復電業務")
                 time.sleep(2)
                 wait.until(EC.element_to_be_clickable((By.XPATH, "//li[contains(text(), '【レジル】停止・復電業務')]"))).click()
                 
-                # CSVインポート
                 wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(.,'CSVインポート')]"))).click()
                 chk = wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='radio' and @value='1']")))
                 driver.execute_script("arguments[0].click();", chk)
                 driver.find_element(By.XPATH, "//input[@type='file']").send_keys(os.path.abspath(f['local']))
                 wait.until(EC.element_to_be_clickable((By.ID, "csv_import_btn"))).click()
                 
-                # アラート対応
                 try:
                     wait.until(EC.alert_is_present())
                     driver.switch_to.alert.accept()
                 except:
                     pass
                 
-                # 処理完了待ち
                 time.sleep(10)
 
-                # 成功時の後処理（Google Drive移動 & Lark通知）
+                # 成功時の後処理
                 timestamp = jst_now().strftime('%H%M%S')
                 new_file_name = f"processed_{display_name}_{timestamp}.csv"
                 move_drive_file(service, f['id'], new_file_name)
                 
-                send_lark_success(display_name)
-                logging.info(f"✅ Success: {display_name} (Saved as: {new_file_name})")
+                # リストに追加
+                success_items.append(display_name)
+                logging.info(f"✅ Success: {display_name}")
 
             except Exception as e:
                 logging.error(f"❌ Error in {display_name}: {e}")
                 driver.save_screenshot(f'error_{display_name}_{jst_now().strftime("%H%M%S")}.png')
+
+        # すべてのファイル処理が終わった後に、まとめて通知を送信
+        if success_items:
+            send_lark_success(success_items)
 
     finally:
         driver.quit()
