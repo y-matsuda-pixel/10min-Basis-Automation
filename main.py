@@ -1,3 +1,4 @@
+# coding:utf-8
 import os
 import io
 import csv
@@ -19,18 +20,11 @@ from selenium.webdriver.support import expected_conditions as EC
 
 # --- 日本時間(JST)の設定 ---
 JST = timezone(timedelta(hours=9))
+def jst_now(): return datetime.datetime.now(JST)
 
-def jst_now():
-    return datetime.datetime.now(JST)
-
-# ログの出力時刻も日本時間にするための設定
-def logging_jst_converter(*args):
-    return jst_now().timetuple()
-
-logging.Formatter.converter = logging_jst_converter
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- GitHub Secretsから取得する設定 ---
+# --- GitHub Secrets等からの設定 ---
 GDRIVE_JSON = os.environ.get('GDRIVE_JSON', '{}')
 SOURCE_FOLDER_ID = os.environ.get('SOURCE_FOLDER_ID', '')
 DESTINATION_FOLDER_ID = os.environ.get('DESTINATION_FOLDER_ID', '')
@@ -46,19 +40,6 @@ def get_drive_service():
     creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=['https://www.googleapis.com/auth/drive'])
     return build('drive', 'v3', credentials=creds)
 
-def download_csvs(service):
-    query = f"'{SOURCE_FOLDER_ID}' in parents and name contains 'output' and mimeType = 'text/csv' and trashed = false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
-    items = results.get('files', [])
-    downloaded = []
-    for item in items:
-        path = os.path.join(TEMP_DIR, item['name'])
-        request = service.files().get_media(fileId=item['id'])
-        with io.FileIO(path, 'wb') as fh:
-            MediaIoBaseDownload(fh, request).next_chunk()
-        downloaded.append({'id': item['id'], 'name': item['name'], 'local': path})
-    return downloaded
-
 def move_drive_file(service, file_id, new_name):
     file = service.files().get(fileId=file_id, fields='parents').execute()
     previous_parents = ",".join(file.get('parents'))
@@ -69,47 +50,53 @@ def move_drive_file(service, file_id, new_name):
         body={'name': new_name}
     ).execute()
 
-def send_lark_success(display_names):
+def send_combined_lark_report(success_list, failure_list):
     """
-    成功したすべての物件名をリストで受け取り、まとめて通知を送信する
+    成功と失敗の結果を1つの「統合レポート」として送信する
     """
-    if not LARK_WEBHOOK_URL or not display_names: return
-    
+    if not LARK_WEBHOOK_URL: return
+    if not success_list and not failure_list: return
+
     now_str = jst_now().strftime('%Y-%m-%d %H:%M:%S')
     
-    # 詳細行を複数作成
-    detail_lines = [f"**詳細:** レジル復旧作業 「{name}」 BLASの登録が完了しました" for name in display_names]
-    details_content = "\n".join(detail_lines)
-    
+    # 成功物件のリスト作成
+    success_text = "\n".join([f"✅ **成功:** {name}" for name in success_list]) if success_list else "なし"
+    # 失敗物件のリスト作成
+    failure_text = "\n".join([f"❌ **失敗:** {name} ({reason})" for name, reason in failure_list]) if failure_list else "なし"
+
     payload = {
         "msg_type": "interactive",
         "card": {
             "header": {
-                "title": {"tag": "plain_text", "content": "🤖 Web自動化処理 SUCCESS"},
-                "template": "green"
+                "title": {"tag": "plain_text", "content": "🤖 BLAS一括登録 統合レポート"},
+                "template": "green" if not failure_list else "orange"
             },
-            "elements": [{
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"**ステータス:** ✅ SUCCESS\n{details_content}\n**実行日時:** {now_str}"
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": f"**【成功物件】**\n{success_text}"}
+                },
+                {
+                    "tag": "hr"
+                },
+                {
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": f"**【失敗・要確認】**\n{failure_text}"}
+                },
+                {
+                    "tag": "note",
+                    "elements": [{"tag": "plain_text", "content": f"実行日時: {now_str}"}]
                 }
-            }]
+            ]
         }
     }
-    try:
-        response = requests.post(LARK_WEBHOOK_URL, json=payload, timeout=10)
-        response.raise_for_status()
-    except Exception as e:
-        logging.error(f"Lark通知の送信に失敗しました: {e}")
+    requests.post(LARK_WEBHOOK_URL, json=payload, timeout=10)
 
 def main():
-    if not GDRIVE_JSON or GDRIVE_JSON == '{}':
-        logging.error("Google Driveの認証情報が設定されていません。")
-        return
-        
     service = get_drive_service()
-    files = download_csvs(service)
+    query = f"'{SOURCE_FOLDER_ID}' in parents and name contains 'output' and mimeType = 'text/csv' and trashed = false"
+    results = service.files().list(q=query, fields="files(id, name)").execute()
+    files = results.get('files', [])
     
     if not files:
         logging.info("処理対象のCSVがありません。")
@@ -118,40 +105,43 @@ def main():
     options = Options()
     options.add_argument('--headless')
     options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
     driver = webdriver.Chrome(options=options)
     wait = WebDriverWait(driver, 30)
 
-    # 成功した物件名を保持するリスト
     success_items = []
+    failure_items = []
 
     try:
-        # ログイン処理
         logging.info("BLASにログイン中...")
         driver.get("https://www.basis-service.com/blas70/users/login")
         wait.until(EC.presence_of_element_located((By.NAME, "username"))).send_keys(BASIS_USERNAME)
         driver.find_element(By.NAME, "password").send_keys(BASIS_PASSWORD)
-        driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, "//input[@type='submit']"))
+        driver.find_element(By.XPATH, "//input[@type='submit']").click()
         time.sleep(5)
 
         for f in files:
-            display_name = "不明"
+            display_name = f['name']
+            path = os.path.join(TEMP_DIR, f['name'])
             try:
-                # CSVから物件名(5列目)と部屋番号(6列目)を抽出
-                with open(f['local'], 'r', encoding='utf-8-sig') as csvf:
-                    reader = csv.reader(csvf)
-                    next(reader) 
-                    row = next(reader, None)
-                    if row:
-                        prop_name = row[4] # 物件名
-                        room_num = row[5]  # 部屋番号
-                        display_name = f"{prop_name} {room_num}".strip()
+                # DriveからDL
+                request = service.files().get_media(fileId=f['id'])
+                with io.FileIO(path, 'wb') as fh:
+                    MediaIoBaseDownload(fh, request).next_chunk()
 
-                logging.info(f"処理開始: {display_name}")
+                # 物件名の抽出 (失敗しても処理は続行)
+                try:
+                    with open(path, 'r', encoding='utf-8-sig') as csvf:
+                        reader = csv.reader(csvf)
+                        next(reader)
+                        row = next(reader, None)
+                        if row:
+                            display_name = f"{row[4]} {row[5]}".strip()
+                except: pass
 
-                # BLAS操作
-                wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[1]/div/div[1]/ul/li[5]/a"))).click()
-                time.sleep(3)
+                logging.info(f"処理中: {display_name}")
+
+                # BLAS登録操作
+                driver.get("https://www.basis-service.com/blas70/items")
                 wait.until(EC.element_to_be_clickable((By.CLASS_NAME, "select2-selection__arrow"))).click()
                 search_field = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "select2-search__field")))
                 search_field.send_keys("【レジル】停止・復電業務")
@@ -161,33 +151,32 @@ def main():
                 wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(.,'CSVインポート')]"))).click()
                 chk = wait.until(EC.presence_of_element_located((By.XPATH, "//input[@type='radio' and @value='1']")))
                 driver.execute_script("arguments[0].click();", chk)
-                driver.find_element(By.XPATH, "//input[@type='file']").send_keys(os.path.abspath(f['local']))
+                driver.find_element(By.XPATH, "//input[@type='file']").send_keys(os.path.abspath(path))
                 wait.until(EC.element_to_be_clickable((By.ID, "csv_import_btn"))).click()
                 
                 try:
-                    wait.until(EC.alert_is_present())
+                    WebDriverWait(driver, 5).until(EC.alert_is_present())
                     driver.switch_to.alert.accept()
-                except:
-                    pass
+                except: pass
                 
-                time.sleep(10)
+                time.sleep(10) # 登録完了を待機
 
-                # 成功時の後処理
-                timestamp = jst_now().strftime('%H%M%S')
-                new_file_name = f"processed_{display_name}_{timestamp}.csv"
-                move_drive_file(service, f['id'], new_file_name)
-                
-                # リストに追加
+                # この時点で「成功」とみなしてリストに追加
                 success_items.append(display_name)
-                logging.info(f"✅ Success: {display_name}")
+
+                # 後処理：Driveでの移動 (ここで失敗してもsuccess_itemsには残る)
+                try:
+                    timestamp = jst_now().strftime('%H%M%S')
+                    move_drive_file(service, f['id'], f"processed_{display_name}_{timestamp}.csv")
+                except Exception as drive_err:
+                    logging.warning(f"Drive移動失敗 ({display_name}): {drive_err}")
 
             except Exception as e:
-                logging.error(f"❌ Error in {display_name}: {e}")
-                driver.save_screenshot(f'error_{display_name}_{jst_now().strftime("%H%M%S")}.png')
+                logging.error(f"❌ 処理失敗 ({display_name}): {e}")
+                failure_items.append((display_name, str(e)))
 
-        # すべてのファイル処理が終わった後に、まとめて通知を送信
-        if success_items:
-            send_lark_success(success_items)
+        # ループ終了後にまとめて通知
+        send_combined_lark_report(success_items, failure_items)
 
     finally:
         driver.quit()
