@@ -2,14 +2,18 @@ name: Basis Automation
 
 on:
   schedule:
-    - cron: '*/10 * * * *'  # 予備の自動実行
-  workflow_dispatch:       # 手動実行用
-  repository_dispatch:     # 【重要】GASからの通知を受け取る設定
+    - cron: '*/10 * * * *'  # 10分おきの実行（既存設定）
+  workflow_dispatch:        # 手動実行用
+  repository_dispatch:      # GAS等からの通知受取
     types: [run-automation]
 
 jobs:
   automation:
     runs-on: ubuntu-latest
+    # 書き込み権限を追加（空コミットをプッシュするために必要）
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -33,6 +37,17 @@ jobs:
           DESTINATION_FOLDER_ID: ${{ secrets.DESTINATION_FOLDER_ID }}
           GDRIVE_JSON: ${{ secrets.GDRIVE_JSON }}
         run: python main.py
+
+      # --- 30日/60日の自動停止を防ぐための「生存確認コミット」 ---
+      # 1週間に1回程度（月曜日の最初の実行時など）に空コミットを打ち込みます
+      - name: Keep Alive (Auto-commit to prevent workflow suspension)
+        if: github.event_schedule == '0 0 * * 1' || github.event_name == 'workflow_dispatch'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git commit --allow-empty -m "Keep-alive: 30日生存確認（自動コミット）"
+          git push
+      # -------------------------------------------------------
 
       - name: Upload screenshot on failure
         if: failure()
