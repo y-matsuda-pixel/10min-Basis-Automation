@@ -19,6 +19,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 # --- 日本時間(JST)の設定 ---
+# UTCから9時間進めることで、実行環境に関わらず日本時間を取得します
 JST = timezone(timedelta(hours=9))
 def jst_now(): return datetime.datetime.now(JST)
 
@@ -52,48 +53,69 @@ def move_drive_file(service, file_id, new_name):
 
 def send_combined_lark_report(success_list, failure_list):
     """
-    成功と失敗の結果を1つの「統合レポート」として送信する
+    成功と失敗の結果を、ご要望の「ステータス・詳細・実行日時」形式で1つのレポートとして送信
     """
     if not LARK_WEBHOOK_URL: return
     if not success_list and not failure_list: return
 
+    # 日本時間の現在時刻を取得
     now_str = jst_now().strftime('%Y-%m-%d %H:%M:%S')
     
-    # 成功物件のリスト作成
-    success_text = "\n".join([f"✅ **成功:** {name}" for name in success_list]) if success_list else "なし"
-    # 失敗物件のリスト作成
-    failure_text = "\n".join([f"❌ **失敗:** {name} ({reason})" for name, reason in failure_list]) if failure_list else "なし"
+    elements = []
+
+    # --- 成功物件のブロック作成 ---
+    for item_name in success_list:
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"**ステータス:** ✅ SUCCESS\n"
+                    f"**詳細:** レジル復旧作業 「{item_name}」 BLASの登録が完了しました\n"
+                    f"**実行日時:** {now_str}"
+                )
+            }
+        })
+
+    # --- 失敗物件がある場合、区切り線とエラー内容を追加 ---
+    if failure_list:
+        if success_list:
+            elements.append({"tag": "hr"})
+        
+        for name, reason in failure_list:
+            elements.append({
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        f"**ステータス:** ❌ FAILURE\n"
+                        f"**詳細:** {name} の登録に失敗しました\n"
+                        f"**理由:** {reason}\n"
+                        f"**実行日時:** {now_str}"
+                    )
+                }
+            })
 
     payload = {
         "msg_type": "interactive",
         "card": {
             "header": {
-                "title": {"tag": "plain_text", "content": "🤖 BLAS一括登録 統合レポート"},
+                "title": {"tag": "plain_text", "content": "🤖 Web自動化処理 SUCCESS" if not failure_list else "⚠️ Web自動化処理 REPORT"},
                 "template": "green" if not failure_list else "orange"
             },
-            "elements": [
-                {
-                    "tag": "div",
-                    "text": {"tag": "lark_md", "content": f"**【成功物件】**\n{success_text}"}
-                },
-                {
-                    "tag": "hr"
-                },
-                {
-                    "tag": "div",
-                    "text": {"tag": "lark_md", "content": f"**【失敗・要確認】**\n{failure_text}"}
-                },
-                {
-                    "tag": "note",
-                    "elements": [{"tag": "plain_text", "content": f"実行日時: {now_str}"}]
-                }
-            ]
+            "elements": elements
         }
     }
-    requests.post(LARK_WEBHOOK_URL, json=payload, timeout=10)
+    
+    try:
+        response = requests.post(LARK_WEBHOOK_URL, json=payload, timeout=10)
+        response.raise_for_status()
+    except Exception as e:
+        logging.error(f"Lark通知送信エラー: {e}")
 
 def main():
     service = get_drive_service()
+    # 処理対象のCSVを検索
     query = f"'{SOURCE_FOLDER_ID}' in parents and name contains 'output' and mimeType = 'text/csv' and trashed = false"
     results = service.files().list(q=query, fields="files(id, name)").execute()
     files = results.get('files', [])
@@ -105,6 +127,7 @@ def main():
     options = Options()
     options.add_argument('--headless')
     options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
     driver = webdriver.Chrome(options=options)
     wait = WebDriverWait(driver, 30)
 
@@ -123,22 +146,27 @@ def main():
             display_name = f['name']
             path = os.path.join(TEMP_DIR, f['name'])
             try:
-                # DriveからDL
+                # Google Driveからダウンロード
                 request = service.files().get_media(fileId=f['id'])
                 with io.FileIO(path, 'wb') as fh:
-                    MediaIoBaseDownload(fh, request).next_chunk()
+                    downloader = MediaIoBaseDownload(fh, request)
+                    done = False
+                    while not done:
+                        status, done = downloader.next_chunk()
 
-                # 物件名の抽出 (失敗しても処理は続行)
+                # CSVから物件名を抽出（5列目と6列目を結合）
                 try:
                     with open(path, 'r', encoding='utf-8-sig') as csvf:
                         reader = csv.reader(csvf)
-                        next(reader)
+                        next(reader) # ヘッダーをスキップ
                         row = next(reader, None)
                         if row:
+                            # 物件名として使用する部分を抽出
                             display_name = f"{row[4]} {row[5]}".strip()
-                except: pass
+                except Exception as csv_err:
+                    logging.warning(f"CSV読み取りエラー (ファイル名を使用します): {csv_err}")
 
-                logging.info(f"処理中: {display_name}")
+                logging.info(f"処理開始: {display_name}")
 
                 # BLAS登録操作
                 driver.get("https://www.basis-service.com/blas70/items")
@@ -154,17 +182,18 @@ def main():
                 driver.find_element(By.XPATH, "//input[@type='file']").send_keys(os.path.abspath(path))
                 wait.until(EC.element_to_be_clickable((By.ID, "csv_import_btn"))).click()
                 
+                # アラートが出た場合の処理
                 try:
                     WebDriverWait(driver, 5).until(EC.alert_is_present())
                     driver.switch_to.alert.accept()
                 except: pass
                 
-                time.sleep(10) # 登録完了を待機
+                time.sleep(10) # 登録完了待機
 
-                # この時点で「成功」とみなしてリストに追加
+                # 成功リストに追加
                 success_items.append(display_name)
 
-                # 後処理：Driveでの移動 (ここで失敗してもsuccess_itemsには残る)
+                # 処理済みフォルダへ移動
                 try:
                     timestamp = jst_now().strftime('%H%M%S')
                     move_drive_file(service, f['id'], f"processed_{display_name}_{timestamp}.csv")
@@ -175,7 +204,7 @@ def main():
                 logging.error(f"❌ 処理失敗 ({display_name}): {e}")
                 failure_items.append((display_name, str(e)))
 
-        # ループ終了後にまとめて通知
+        # すべての処理終了後に統合レポートを送信
         send_combined_lark_report(success_items, failure_items)
 
     finally:
