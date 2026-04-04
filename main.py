@@ -7,6 +7,7 @@ import time
 import logging
 import datetime
 import requests
+import re
 from datetime import timezone, timedelta
 
 from googleapiclient.discovery import build
@@ -35,6 +36,10 @@ LARK_WEBHOOK_URL = os.environ.get('LARK_WEBHOOK_URL', '')
 TEMP_DIR = './temp'
 if not os.path.exists(TEMP_DIR): os.makedirs(TEMP_DIR)
 
+# --- エリア判定用の都道府県リスト ---
+KANTO_PREFS = ['東京都', '神奈川県', '埼玉県', '千葉県', '茨城県', '栃木県', '群馬県']
+KANSAI_PREFS = ['大阪府', '京都府', '兵庫県', '奈良県', '滋賀県', '和歌山県']
+
 def get_drive_service():
     creds_dict = json.loads(GDRIVE_JSON)
     creds = service_account.Credentials.from_service_account_info(creds_dict, scopes=['https://www.googleapis.com/auth/drive'])
@@ -50,9 +55,29 @@ def move_drive_file(service, file_id, new_name):
         body={'name': new_name}
     ).execute()
 
+def get_region_from_address(address):
+    """
+    住所から都道府県を抽出し、関東・関西を判定する
+    """
+    if not address:
+        return "不明"
+    
+    # 住所から都道府県を抽出 (例: 大阪府)
+    match = re.search(r'(...??[都道府県])', address)
+    if not match:
+        return "不明"
+    
+    prefecture = match.group(1)
+    if prefecture in KANTO_PREFS:
+        return "関東"
+    elif prefecture in KANSAI_PREFS:
+        return "関西"
+    else:
+        return f"その他（{prefecture}）"
+
 def send_combined_lark_report(success_list, failure_list):
     """
-    成功と失敗の結果をLarkに送信。スイッチ情報も含める。
+    成功と失敗の結果をLarkに送信。地域（エリア）情報も含める。
     """
     if not LARK_WEBHOOK_URL: return
     if not success_list and not failure_list: return
@@ -69,6 +94,7 @@ def send_combined_lark_report(success_list, failure_list):
                 "content": (
                     f"**ステータス:** ✅ SUCCESS\n"
                     f"**詳細:** レジル復旧作業 「{item['name']}」 BLASの登録が完了しました\n"
+                    f"**地域:** {item['region']}\n"
                     f"**スイッチ:** {item['switch']}\n"
                     f"**実行日時:** {now_str}"
                 )
@@ -142,6 +168,7 @@ def main():
             path = os.path.join(TEMP_DIR, f['name'])
             display_name = f['name']
             switch_val = "不明"
+            region_val = "不明"
 
             try:
                 # 1. Google Driveからダウンロード
@@ -152,20 +179,23 @@ def main():
                     while not done:
                         status, done = downloader.next_chunk()
 
-                # 2. CSVから物件名とスイッチ(17列目)を抽出
+                # 2. CSVから物件名、スイッチ(17列目)、地域(7列目の住所から判定)を抽出
                 try:
                     with open(path, 'r', encoding='utf-8-sig') as csvf:
                         reader = csv.reader(csvf)
                         next(reader) # ヘッダースキップ
                         row = next(reader, None)
                         if row:
+                            # 物件名 + 部屋番号
                             display_name = f"{row[4]} {row[5]}".strip()
-                            # 17列目（Index 16）を取得。空なら「あり」をデフォルトに。
+                            # 地域判定 (Index 6: 物件住所)
+                            region_val = get_region_from_address(row[6] if len(row) > 6 else "")
+                            # スイッチ判定 (Index 16: スキルレススイッチの有無)
                             switch_val = row[16] if len(row) > 16 and row[16] else "あり"
                 except Exception as csv_err:
                     logging.warning(f"CSV読み取りエラー: {csv_err}")
 
-                logging.info(f"処理開始: {display_name} (スイッチ: {switch_val})")
+                logging.info(f"処理開始: {display_name} (地域: {region_val}, スイッチ: {switch_val})")
 
                 # 3. BLAS登録操作
                 driver.get("https://www.basis-service.com/blas70/items")
@@ -189,7 +219,11 @@ def main():
                 time.sleep(10) # 登録完了待機
 
                 # 成功リストに情報を格納
-                success_items.append({"name": display_name, "switch": switch_val})
+                success_items.append({
+                    "name": display_name, 
+                    "switch": switch_val, 
+                    "region": region_val
+                })
 
                 # 処理済みフォルダへ移動
                 timestamp = jst_now().strftime('%H%M%S')
