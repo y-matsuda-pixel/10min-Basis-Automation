@@ -57,25 +57,39 @@ def move_drive_file(service, file_id, new_name):
 
 def get_region_from_address(address):
     """
-    住所から都道府県を抽出し、関東・関西を判定する
+    住所からエリア（関東・関西）を判定する。
+    1. 都道府県名で判定
+    2. 都道府県がない場合（大阪市〜など）、主要市名で判定
     """
     if not address:
         return "不明"
     
-    # 住所から都道府県を抽出。前方の郵便番号や空白を無視してマッチング
-    # strip()を入れることで「 大阪府」のような空白入りを防ぐ
+    # --- 1. 都道府県名を探して判定 ---
+    # [一-龠]（漢字）2〜3文字 + [都道府県] を探す。strip()で空白を除去。
     match = re.search(r'([一-龠]{2,3}[都道府県])', address)
-    if not match:
-        return "不明"
-    
-    prefecture = match.group(1).strip()
-    
-    if prefecture in KANTO_PREFS:
-        return "関東"
-    elif prefecture in KANSAI_PREFS:
+    if match:
+        prefecture = match.group(1).strip()
+        if prefecture in KANTO_PREFS:
+            return "関東"
+        elif prefecture in KANSAI_PREFS:
+            return "関西"
+
+    # --- 2. 都道府県が見つからない、またはリスト外の場合のフォールバック ---
+    # 関西の主要市名（これらが住所に含まれていれば関西と判定）
+    kansai_cities = ['大阪市', '京都市', '神戸市', '堺市', '奈良市', '和歌山市', '大津市', '東大阪市', '西宮市', '尼崎市', '豊中市', '吹田市']
+    if any(city in address for city in kansai_cities):
         return "関西"
-    else:
-        return f"その他（{prefecture}）"
+    
+    # 関東の主要市名
+    kanto_cities = ['横浜市', '川崎市', 'さいたま市', '千葉市', '相模原市', '船橋市', '川口市', '新宿区', '世田谷区']
+    if any(city in address for city in kanto_cities):
+        return "関東"
+
+    # どちらにも該当しない場合、都道府県が見つかっていればその名前を出す
+    if match:
+        return f"その他（{match.group(1).strip()}）"
+    
+    return "不明"
 
 def send_combined_lark_report(success_list, failure_list):
     """
@@ -181,18 +195,18 @@ def main():
                     while not done:
                         status, done = downloader.next_chunk()
 
-                # 2. CSVから物件名、スイッチ(17列目)、地域(7列目の住所から判定)を抽出
+                # 2. CSVからデータ抽出
                 try:
                     with open(path, 'r', encoding='utf-8-sig') as csvf:
                         reader = csv.reader(csvf)
                         next(reader) # ヘッダースキップ
                         row = next(reader, None)
                         if row:
-                            # 物件名 + 部屋番号 (Index 4 + Index 5)
+                            # 物件名 + 部屋番号
                             display_name = f"{row[4]} {row[5]}".strip()
                             # 地域判定 (Index 6: 物件住所)
                             region_val = get_region_from_address(row[6] if len(row) > 6 else "")
-                            # スイッチ判定 (Index 16: スキルレススイッチの有無)
+                            # スイッチ判定 (Index 16)
                             switch_val = row[16] if len(row) > 16 and row[16] else "あり"
                 except Exception as csv_err:
                     logging.warning(f"CSV読み取りエラー: {csv_err}")
@@ -220,7 +234,6 @@ def main():
                 
                 time.sleep(10) # 登録完了待機
 
-                # 成功リストに情報を格納
                 success_items.append({
                     "name": display_name, 
                     "switch": switch_val, 
