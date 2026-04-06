@@ -62,12 +62,14 @@ def get_region_from_address(address):
     if not address:
         return "不明"
     
-    # 住所から都道府県を抽出 (例: 大阪府)
-    match = re.search(r'(...??[都道府県])', address)
+    # 住所から都道府県を抽出。前方の郵便番号や空白を無視してマッチング
+    # strip()を入れることで「 大阪府」のような空白入りを防ぐ
+    match = re.search(r'([一-龠]{2,3}[都道府県])', address)
     if not match:
         return "不明"
     
-    prefecture = match.group(1)
+    prefecture = match.group(1).strip()
+    
     if prefecture in KANTO_PREFS:
         return "関東"
     elif prefecture in KANSAI_PREFS:
@@ -77,7 +79,7 @@ def get_region_from_address(address):
 
 def send_combined_lark_report(success_list, failure_list):
     """
-    成功と失敗の結果をLarkに送信。地域（エリア）情報も含める。
+    成功と失敗の結果をLarkに送信。
     """
     if not LARK_WEBHOOK_URL: return
     if not success_list and not failure_list: return
@@ -186,7 +188,7 @@ def main():
                         next(reader) # ヘッダースキップ
                         row = next(reader, None)
                         if row:
-                            # 物件名 + 部屋番号
+                            # 物件名 + 部屋番号 (Index 4 + Index 5)
                             display_name = f"{row[4]} {row[5]}".strip()
                             # 地域判定 (Index 6: 物件住所)
                             region_val = get_region_from_address(row[6] if len(row) > 6 else "")
