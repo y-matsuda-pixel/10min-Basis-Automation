@@ -93,9 +93,11 @@ def send_combined_lark_report(success_list, failure_list):
     now_str = jst_now().strftime('%Y-%m-%d %H:%M:%S')
     elements = []
 
+    # 「停止」が含まれているかチェック
+    has_teishi = any(item.get('action') == '停止' for item in success_list)
+
     # --- 成功物件のブロック作成 ---
     for item in success_list:
-        # action（停止 or 復旧）を反映させる。取得できない場合はデフォルト「復旧」
         action_name = item.get('action', '復旧')
         
         elements.append({
@@ -129,12 +131,21 @@ def send_combined_lark_report(success_list, failure_list):
                 }
             })
 
+    # --- ヘッダー色の判定 ---
+    # 優先順位: 1. 失敗がある(赤) > 2. 停止作業がある(橙) > 3. その他(緑)
+    if failure_list:
+        header_template = "red"
+    elif has_teishi:
+        header_template = "orange"
+    else:
+        header_template = "green"
+
     payload = {
         "msg_type": "interactive",
         "card": {
             "header": {
                 "title": {"tag": "plain_text", "content": "🤖 Web自動化処理 SUCCESS" if not failure_list else "⚠️ Web自動化処理 REPORT"},
-                "template": "green" if not failure_list else "orange"
+                "template": header_template
             },
             "elements": elements
         }
@@ -148,7 +159,6 @@ def send_combined_lark_report(success_list, failure_list):
 
 def main():
     service = get_drive_service()
-    # 処理対象のCSVを検索
     query = f"'{SOURCE_FOLDER_ID}' in parents and name contains 'output' and mimeType = 'text/csv' and trashed = false"
     results = service.files().list(q=query, fields="files(id, name)").execute()
     files = results.get('files', [])
@@ -180,10 +190,10 @@ def main():
             display_name = f['name']
             switch_val = "不明"
             region_val = "不明"
-            action_val = "復旧" # デフォルト
+            action_val = "復旧" 
 
             try:
-                # 1. Google Driveからダウンロード
+                # 1. ダウンロード
                 request = service.files().get_media(fileId=f['id'])
                 with io.FileIO(path, 'wb') as fh:
                     downloader = MediaIoBaseDownload(fh, request)
@@ -191,27 +201,23 @@ def main():
                     while not done:
                         status, done = downloader.next_chunk()
 
-                # 2. CSVからデータ抽出
+                # 2. CSV解析
                 try:
                     with open(path, 'r', encoding='utf-8-sig') as csvf:
                         reader = csv.reader(csvf)
-                        next(reader) # ヘッダースキップ
+                        next(reader) 
                         row = next(reader, None)
                         if row:
-                            # Index 2: 停止or復旧 を取得
                             action_val = row[2] if len(row) > 2 else "復旧"
-                            # 物件名 + 部屋番号
                             display_name = f"{row[4]} {row[5]}".strip()
-                            # 地域判定 (Index 6: 物件住所)
                             region_val = get_region_from_address(row[6] if len(row) > 6 else "")
-                            # スイッチ判定 (Index 16)
                             switch_val = row[16] if len(row) > 16 and row[16] else "あり"
                 except Exception as csv_err:
                     logging.warning(f"CSV読み取りエラー: {csv_err}")
 
-                logging.info(f"処理開始: [{action_val}] {display_name} (地域: {region_val}, スイッチ: {switch_val})")
+                logging.info(f"処理開始: [{action_val}] {display_name}")
 
-                # 3. BLAS登録操作
+                # 3. 操作
                 driver.get("https://www.basis-service.com/blas70/items")
                 wait.until(EC.element_to_be_clickable((By.CLASS_NAME, "select2-selection__arrow"))).click()
                 search_field = wait.until(EC.presence_of_element_located((By.CLASS_NAME, "select2-search__field")))
@@ -230,16 +236,15 @@ def main():
                     driver.switch_to.alert.accept()
                 except: pass
                 
-                time.sleep(10) # 登録完了待機
+                time.sleep(10) 
 
                 success_items.append({
                     "name": display_name, 
                     "switch": switch_val, 
                     "region": region_val,
-                    "action": action_val  # Lark通知用にアクション(停止or復旧)を保存
+                    "action": action_val 
                 })
 
-                # 処理済みフォルダへ移動
                 timestamp = jst_now().strftime('%H%M%S')
                 move_drive_file(service, f['id'], f"processed_{display_name}_{timestamp}.csv")
 
@@ -247,7 +252,6 @@ def main():
                 logging.error(f"❌ 処理失敗 ({display_name}): {e}")
                 failure_items.append((display_name, str(e)))
 
-        # 4. レポート送信
         send_combined_lark_report(success_items, failure_items)
 
     finally:
