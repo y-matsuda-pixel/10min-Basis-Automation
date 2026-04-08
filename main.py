@@ -58,14 +58,10 @@ def move_drive_file(service, file_id, new_name):
 def get_region_from_address(address):
     """
     住所からエリア（関東・関西）を判定する。
-    1. 都道府県名で判定
-    2. 都道府県がない場合（大阪市〜など）、主要市名で判定
     """
     if not address:
         return "不明"
     
-    # --- 1. 都道府県名を探して判定 ---
-    # [一-龠]（漢字）2〜3文字 + [都道府県] を探す。strip()で空白を除去。
     match = re.search(r'([一-龠]{2,3}[都道府県])', address)
     if match:
         prefecture = match.group(1).strip()
@@ -74,18 +70,14 @@ def get_region_from_address(address):
         elif prefecture in KANSAI_PREFS:
             return "関西"
 
-    # --- 2. 都道府県が見つからない、またはリスト外の場合のフォールバック ---
-    # 関西の主要市名（これらが住所に含まれていれば関西と判定）
     kansai_cities = ['大阪市', '京都市', '神戸市', '堺市', '奈良市', '和歌山市', '大津市', '東大阪市', '西宮市', '尼崎市', '豊中市', '吹田市']
     if any(city in address for city in kansai_cities):
         return "関西"
     
-    # 関東の主要市名
     kanto_cities = ['横浜市', '川崎市', 'さいたま市', '千葉市', '相模原市', '船橋市', '川口市', '新宿区', '世田谷区']
     if any(city in address for city in kanto_cities):
         return "関東"
 
-    # どちらにも該当しない場合、都道府県が見つかっていればその名前を出す
     if match:
         return f"その他（{match.group(1).strip()}）"
     
@@ -103,13 +95,16 @@ def send_combined_lark_report(success_list, failure_list):
 
     # --- 成功物件のブロック作成 ---
     for item in success_list:
+        # action（停止 or 復旧）を反映させる。取得できない場合はデフォルト「復旧」
+        action_name = item.get('action', '復旧')
+        
         elements.append({
             "tag": "div",
             "text": {
                 "tag": "lark_md",
                 "content": (
                     f"**ステータス:** ✅ SUCCESS\n"
-                    f"**詳細:** レジル復旧作業 「{item['name']}」 BLASの登録が完了しました\n"
+                    f"**詳細:** レジル{action_name}作業 「{item['name']}」 BLASの登録が完了しました\n"
                     f"**地域:** {item['region']}\n"
                     f"**スイッチ:** {item['switch']}\n"
                     f"**実行日時:** {now_str}"
@@ -185,6 +180,7 @@ def main():
             display_name = f['name']
             switch_val = "不明"
             region_val = "不明"
+            action_val = "復旧" # デフォルト
 
             try:
                 # 1. Google Driveからダウンロード
@@ -202,6 +198,8 @@ def main():
                         next(reader) # ヘッダースキップ
                         row = next(reader, None)
                         if row:
+                            # Index 2: 停止or復旧 を取得
+                            action_val = row[2] if len(row) > 2 else "復旧"
                             # 物件名 + 部屋番号
                             display_name = f"{row[4]} {row[5]}".strip()
                             # 地域判定 (Index 6: 物件住所)
@@ -211,7 +209,7 @@ def main():
                 except Exception as csv_err:
                     logging.warning(f"CSV読み取りエラー: {csv_err}")
 
-                logging.info(f"処理開始: {display_name} (地域: {region_val}, スイッチ: {switch_val})")
+                logging.info(f"処理開始: [{action_val}] {display_name} (地域: {region_val}, スイッチ: {switch_val})")
 
                 # 3. BLAS登録操作
                 driver.get("https://www.basis-service.com/blas70/items")
@@ -237,7 +235,8 @@ def main():
                 success_items.append({
                     "name": display_name, 
                     "switch": switch_val, 
-                    "region": region_val
+                    "region": region_val,
+                    "action": action_val  # Lark通知用にアクション(停止or復旧)を保存
                 })
 
                 # 処理済みフォルダへ移動
