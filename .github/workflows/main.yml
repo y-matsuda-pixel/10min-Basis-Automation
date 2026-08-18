@@ -16,7 +16,7 @@ jobs:
   automation:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 生存確認コミットに必要
+      contents: write # 60日自動停止防止コミットに必須
 
     steps:
       - name: Checkout code
@@ -42,15 +42,11 @@ jobs:
           GDRIVE_JSON: ${{ secrets.GDRIVE_JSON }}
         run: python main.py
 
-      # --- 30日/60日の自動停止を防ぐための生存確認コミット ---
+      # --- 60日の自動停止を防ぐための処理 ---
       - name: Keep Alive
-        # 毎週月曜日の朝0時に空コミットを打つ設定
-        if: github.event_schedule == '0 0 * * 1' || github.event_name == 'workflow_dispatch'
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git commit --allow-empty -m "Keep-alive: 自動停止防止"
-          git push
+        uses: gautamkrishnar/keepalive-workflow@v2
+        with:
+          commit_message: 'Keep-alive: 自動停止防止'
 
       - name: Upload screenshot on failure
         if: failure()
