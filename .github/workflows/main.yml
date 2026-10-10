@@ -40,6 +40,8 @@ jobs:
           DESTINATION_FOLDER_ID: ${{ secrets.DESTINATION_FOLDER_ID }}
           LARK_WEBHOOK_URL: ${{ secrets.LARK_WEBHOOK_URL }}
           GDRIVE_JSON: ${{ secrets.GDRIVE_JSON }}
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
         run: python main.py
 
       # 30日/60日の自動停止を防ぐための生存確認コミット
