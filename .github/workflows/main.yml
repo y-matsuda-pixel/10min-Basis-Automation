@@ -27,10 +27,11 @@ jobs:
         with:
           python-version: '3.10'
 
+      # 不足していた pandas, pdfminer.six, openpyxl を追加
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install selenium webdriver-manager requests google-api-python-client google-auth-httplib2 google-auth-oauthlib
+          pip install selenium webdriver-manager requests google-api-python-client google-auth-httplib2 google-auth-oauthlib pandas pdfminer.six openpyxl
 
       - name: Run automation script
         env:
