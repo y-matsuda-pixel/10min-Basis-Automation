@@ -1,6 +1,6 @@
 import sys
 print("==========================================", flush=True)
-print("=== PERFECT_CODE_VERSION_V18_HYBRID_FINAL ===", flush=True)
+print("=== PERFECT_CODE_VERSION_V19_LARK_FIXED ===", flush=True)
 print("==========================================", flush=True)
 
 # coding: utf-8
@@ -201,6 +201,7 @@ def write_email_to_lark_sheet(email_info):
                     break
     except Exception as e:
         log_flush(f"メール用シートタブ検索エラー: {e}", logging.WARNING)
+
     read_url = f"https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values/{sheet_id}!A1:A500"
     target_row = 2
     try:
@@ -219,6 +220,7 @@ def write_email_to_lark_sheet(email_info):
             target_row = max(last_filled_row + 1, 2)
     except Exception as e:
         log_flush(f"メール用空行判定エラー: {e}", logging.WARNING)
+
     write_url = f"https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values"
     row_data = [
         email_info.get('date_str', jst_now().strftime('%Y/%m/%d %H:%M:%S')),
@@ -243,6 +245,7 @@ def write_to_lark_sheet(extracted_data, detected_region):
     now = jst_now()
     target_sheet_title = f"{now.year}年{now.month}月"
     sheet_id = None
+    
     try:
         sheets_url = f"https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/{spreadsheet_token}/sheets/query"
         res_sheets = requests.get(sheets_url, headers=headers, timeout=10)
@@ -255,6 +258,7 @@ def write_to_lark_sheet(extracted_data, detected_region):
                     break
     except Exception as e:
         log_flush(f"シートタブ一覧の取得失敗: {e}", logging.WARNING)
+
     if not sheet_id:
         try:
             copy_url = f"https://open.larksuite.com/open-apis/sheets/v3/spreadsheets/{spreadsheet_token}/sheets/{DEFAULT_SHEET_ID}/copy"
@@ -267,6 +271,7 @@ def write_to_lark_sheet(extracted_data, detected_region):
                 sheet_id = DEFAULT_SHEET_ID
         except Exception as e:
             sheet_id = DEFAULT_SHEET_ID
+
     read_url = f"https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values/{sheet_id}!B1:E500"
     target_row = 4
     last_no = 0
@@ -291,13 +296,16 @@ def write_to_lark_sheet(extracted_data, detected_region):
             target_row = max(last_filled_row + 1, 4)
     except Exception as e:
         log_flush(f"空行判定エラー: {e}", logging.WARNING)
+
     if last_no == 0 and target_row > 4: last_no = target_row - 4
     next_biz_day = get_next_business_day().strftime('%Y/%m/%d')
     write_url = f"https://open.larksuite.com/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values"
+    
     stop_items = [d for d in extracted_data if d.get('停止or復旧') != '復旧']
     recovery_items = [d for d in extracted_data if d.get('停止or復旧') == '復旧']
     team = "ガスプラ課" if detected_region == "関東" else "西日本"
     current_no = last_no
+
     if stop_items:
         current_no += 1
         kind = stop_items[0]['物件種別']
@@ -310,6 +318,7 @@ def write_to_lark_sheet(extracted_data, detected_region):
             target_row += 1
         except Exception as e:
             log_flush(f"Larkシート停止書き込み例外: {e}", logging.ERROR)
+
     for d in recovery_items:
         current_no += 1
         action = "【復旧】"
@@ -347,6 +356,18 @@ def get_next_business_day():
     return next_day
 
 def get_gmail_service():
+    creds = None
+    token_path = BASE_DIR / 'token.json'
+    if os.path.exists(token_path):
+        try: creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+        except Exception: pass
+    if creds and creds.expired and creds.refresh_token:
+        try: creds.refresh(Request())
+        except Exception: creds = None
+    if not creds or not creds.valid:
+        raise RuntimeError("Gmail認証トークン(token.json)が無効または存在しません。")
+    return build('gmail', 'v1', credentials=creds, cache_discovery=False)
+
 def get_or_create_processed_label_id(service, label_name="処理済み"):
     try:
         results = service.users().labels().list(userId='me').execute()
