@@ -7,16 +7,15 @@ on:
   repository_dispatch:      # GAS等からの通知受取用
     types: [run-automation]
 
-# 並列実行を防ぎ、1件ずつ順番に処理させる設定
 concurrency:
   group: automation-group
-  cancel-in-progress: false # 前の処理を消さずに、順番待ち（キュー）に入れる
+  cancel-in-progress: false
 
 jobs:
   automation:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 生存確認コミット用に書き込み権限を付与
+      contents: write
 
     steps:
       - name: Checkout code
@@ -25,13 +24,12 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # Pythonバージョンを3.11に上げて警告を解消
+          python-version: '3.11'
 
-      # 不足していた pandas, pdfminer.six, openpyxl を追加
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install selenium webdriver-manager requests google-api-python-client google-auth-httplib2 google-auth-oauthlib pandas pdfminer.six openpyxl
+          python -m pip install selenium webdriver-manager requests google-api-python-client google-auth-httplib2 google-auth-oauthlib pandas pdfminer.six openpyxl jpholiday
 
       - name: Run automation script
         env:
@@ -43,10 +41,9 @@ jobs:
           GDRIVE_JSON: ${{ secrets.GDRIVE_JSON }}
           LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
           LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
-          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }} # ← 【重要】これを追加
+          GMAIL_TOKEN_JSON: ${{ secrets.GMAIL_TOKEN_JSON }}
         run: python main.py
 
-      # 30日/60日の自動停止を防ぐための生存確認コミット
       - name: Keep Alive
         if: github.event_schedule == '0 0 * * 1' || github.event_name == 'workflow_dispatch'
         run: |
