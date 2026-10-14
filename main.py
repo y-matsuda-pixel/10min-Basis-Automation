@@ -347,18 +347,6 @@ def get_next_business_day():
     return next_day
 
 def get_gmail_service():
-    creds = None
-    token_path = BASE_DIR / 'token.json'
-    if os.path.exists(token_path):
-        try: creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-        except Exception: pass
-    if creds and creds.expired and creds.refresh_token:
-        try: creds.refresh(Request())
-        except Exception: creds = None
-    if not creds or not creds.valid:
-        raise RuntimeError("Gmail認証トークン(token.json)が無効または存在しません。")
-    return build('gmail', 'v1', credentials=creds, cache_discovery=False)
-
 def get_or_create_processed_label_id(service, label_name="処理済み"):
     try:
         results = service.users().labels().list(userId='me').execute()
